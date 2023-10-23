@@ -14,7 +14,7 @@ struct Args {
     username: String,
 }
 
-fn check_file_exists_with_polling(username: &str) -> bool {
+pub fn check_file_exists_with_polling(username: &str) -> bool {
     let max_polling_time = Duration::from_secs(90); // 1.5 minutes
     let poll_interval = Duration::from_secs(1);
     let extensions_json_path = format!("/data/user-homes/{}/.local/share/code-server/extensions/extensions.json", username);
@@ -36,7 +36,7 @@ fn check_file_exists_with_polling(username: &str) -> bool {
     false
 }
 
-fn login_as_user(username: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn login_as_user(username: &str) -> Result<(), Box<dyn std::error::Error>> {
     // Check if the user's home directory exists
     let home_directory = format!("/data/user-homes/{}", username); // Modify the path as needed
     if !Path::new(&home_directory).exists() {
