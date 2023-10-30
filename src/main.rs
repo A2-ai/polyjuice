@@ -67,11 +67,11 @@ fn main() {
         .arg("-")
         .arg("devin")
         .arg("-c")
-        .arg("printenv")
+        .arg(r#"R -e 'Sys.sleep(60)'"#)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("ls command failed to start");
+        .expect("R command failed to start");
     let output = cmd.wait_with_output().unwrap();
     dbg!(output);
 
