@@ -1,10 +1,10 @@
 use clap::{error, Parser};
 use pam_client::{Context, ConversationHandler, Flag, Session};
 use core::fmt;
-use std::io::Stderr;
-use std::path::Path;
+use std::io::{Stderr, BufReader};
+use std::io::BufRead;
 use std::process::{Command, Stdio};
-use std::thread::sleep;
+use std::thread::{sleep, self};
 use std::time::{Duration, Instant};
 use std::{env, fs};
 use users::get_user_by_name;
@@ -63,16 +63,38 @@ fn main() {
     for item in &session.envlist() {
         println!("VAR: {}", item);
     }
-    let cmd = Command::new("su")
+    let mut child = Command::new("su")
         .arg("-")
         .arg("devin")
         .arg("-c")
-        .arg(r#"R -e 'Sys.sleep(60)'"#)
+        .arg(r#"R -e 'getwd()'"#)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("R command failed to start");
-    let output = cmd.wait_with_output().unwrap();
-    dbg!(output);
+    let stdout_reader = child.stdout.take().expect("Failed to open stdout");
+    let stderr_reader = child.stderr.take().expect("Failed to open stderr");
+
+    let stdout_thread = thread::spawn(move || {
+        let stdout = BufReader::new(stdout_reader);
+        for line in stdout.lines() {
+            let line = line.expect("Failed to read stdout line");
+            println!("[stdout] {}", line);
+        }
+    });
+
+    let stderr_thread = thread::spawn(move || {
+        let stderr = BufReader::new(stderr_reader);
+        for line in stderr.lines() {
+            let line = line.expect("Failed to read stderr line");
+            println!("[stderr] {}", line);
+        }
+    });
+
+    let status = child.wait().expect("Failed to wait for child process");
+    stdout_thread.join().expect("stdout thread panicked");
+    stderr_thread.join().expect("stderr thread panicked");
+
+    println!("Finished with status {:?}", status);
 
 }
