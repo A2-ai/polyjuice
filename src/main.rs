@@ -67,9 +67,10 @@ fn main() {
         .arg("-")
         .arg("devin")
         .arg("-c")
-        .arg(r#"R -e 'getwd()'"#)
+        .arg(r#"R -e 'names(Sys.getenv()); message("USER: ", Sys.getenv("USER"), "\nHOME: ", Sys.getenv("HOME"),  "\nPATH: ", Sys.getenv("PATH"))'"#)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .env_clear()
         .spawn()
         .expect("R command failed to start");
     let stdout_reader = child.stdout.take().expect("Failed to open stdout");
