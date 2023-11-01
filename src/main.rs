@@ -3,6 +3,7 @@ use pam_client::{Context, ConversationHandler, Flag, Session};
 use core::fmt;
 use std::io::{Stderr, BufReader};
 use std::io::BufRead;
+use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::thread::{sleep, self};
 use std::time::{Duration, Instant};
@@ -40,6 +41,39 @@ fn setup_pam_context(
     return Ok(context);
 }
 
+use std::collections::HashMap;
+
+fn get_env_as_map() -> Result<HashMap<String, String>, String> {
+    // Execute the command and capture the output
+    let output = Command::new("su")
+        .arg("-")
+        .arg("devin")
+        .arg("-c")
+        .arg("printenv")
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    // Check for command execution errors
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into());
+    }
+
+    // Convert the output bytes to a String
+    let output_str = String::from_utf8_lossy(&output.stdout);
+
+    // Parse each line of the output
+    let mut env_map = HashMap::new();
+    for line in output_str.lines() {
+        let mut split = line.splitn(2, '=');
+        if let (Some(key), Some(value)) = (split.next(), split.next()) {
+            env_map.insert(key.to_string(), value.to_string());
+        }
+    }
+    Ok(env_map)
+}
+
+
+
 fn main() {
     // Parse the command-line arguments using the Args struct
     let args: Args = Args::parse();
@@ -63,16 +97,28 @@ fn main() {
     for item in &session.envlist() {
         println!("VAR: {}", item);
     }
-    let mut child = Command::new("su")
-        .arg("-")
-        .arg("devin")
-        .arg("-c")
-        .arg(r#"R -e 'names(Sys.getenv()); message("USER: ", Sys.getenv("USER"), "\nHOME: ", Sys.getenv("HOME"),  "\nPATH: ", Sys.getenv("PATH"))'"#)
+
+    let start_time = Instant::now();
+    let envs = get_env_as_map().unwrap_or_else(|e| {
+        println!("Error: {}", e);
+        std::process::exit(1);
+    });
+    let duration = start_time.elapsed();
+    println!("Time elapsed for getting envs is: {:?}", duration);
+
+    let mut child = Command::new("R")
+        .arg("-e")
+        .arg("Sys.info()")
+        //.arg(r#"R -e 'names(Sys.getenv()); message("USER: ", Sys.getenv("USER"), "\nHOME: ", Sys.getenv("HOME"),  "\nPATH: ", Sys.getenv("PATH"))'"#)
+        //.arg(r#"R -e 'names(Sys.getenv()); message("USER: ", Sys.getenv("USER"), "\nHOME: ", Sys.getenv("HOME"),  "\nPATH: ", Sys.getenv("PATH"))'"#)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env_clear()
+        .envs(envs)
+        .uid(uid)
         .spawn()
         .expect("R command failed to start");
+
     let stdout_reader = child.stdout.take().expect("Failed to open stdout");
     let stderr_reader = child.stderr.take().expect("Failed to open stderr");
 
@@ -93,6 +139,8 @@ fn main() {
     });
 
     let status = child.wait().expect("Failed to wait for child process");
+    let duration = start_time.elapsed();
+    println!("Time elapsed for everything is: {:?}", duration);
     stdout_thread.join().expect("stdout thread panicked");
     stderr_thread.join().expect("stderr thread panicked");
 
