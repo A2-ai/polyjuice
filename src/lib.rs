@@ -2,8 +2,10 @@ use pam_client::{Context, Flag};
 
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
+use std::collections::HashMap;
 
 pub fn check_file_exists_with_polling(username: &str) -> bool {
     let max_polling_time = Duration::from_secs(90); // 1.5 minutes
@@ -29,6 +31,59 @@ pub fn check_file_exists_with_polling(username: &str) -> bool {
     println!("File not found within the polling time.");
     false
 }
+
+
+pub fn get_env_as_map(user: String) -> Result<HashMap<String, String>, String> {
+    // Execute the command and capture the output
+    let output = Command::new("su")
+        .arg("-")
+        .arg(user)
+        .arg("-c")
+        .arg("printenv")
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    // Check for command execution errors
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into());
+    }
+
+    // Convert the output bytes to a String
+    let output_str = String::from_utf8_lossy(&output.stdout);
+
+    // Parse each line of the output
+    let mut env_map = HashMap::new();
+    for line in output_str.lines() {
+        let mut split = line.splitn(2, '=');
+        if let (Some(key), Some(value)) = (split.next(), split.next()) {
+            env_map.insert(key.to_string(), value.to_string());
+        }
+    }
+    Ok(env_map)
+}
+
+pub fn setup_pam_context(
+    username: String,
+) -> Result<Context<pam_client::conv_null::Conversation>, Box<dyn std::error::Error>> {
+    // Check if the user's home directory exists
+
+    // Initialize a PAM context
+    let mut context = Context::new(
+        "polyjuice",     // Service name
+        Some(&username), // Preset username
+        pam_client::conv_null::Conversation::new(),
+    )?;
+
+    // Skip authentication if already done by other means (e.g., SSH key)
+
+    // Measure the time taken for PAM session creation
+
+    // Validate the account
+    context.acct_mgmt(Flag::NONE)?;
+    return Ok(context);
+}
+
+
 
 pub fn login_as_user(username: &str) -> Result<(), Box<dyn std::error::Error>> {
     // Check if the user's home directory exists
