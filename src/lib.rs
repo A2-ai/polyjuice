@@ -1,79 +1,124 @@
 use pam_client::{Context, Flag};
+use users::get_effective_uid; 
+use std::process::Command;
+use std::collections::HashMap;
 
-use std::fs;
-use std::path::Path;
-use std::thread::sleep;
-use std::time::{Duration, Instant};
 
-pub fn check_file_exists_with_polling(username: &str) -> bool {
-    let max_polling_time = Duration::from_secs(90); // 1.5 minutes
-    let poll_interval = Duration::from_secs(1);
-    let extensions_json_path = format!(
-        "/data/user-homes/{}/.local/share/code-server/extensions/extensions.json",
-        username
-    );
+/// Retrieves the environment variables for a specified user as a map.
+///
+/// Starts a login shell as the user and returns the values
+/// in a `HashMap` where each key-value pair corresponds to
+/// an environment variable and its value.
+///
+/// # Parameters
+///
+/// * `user`: A `String` specifying the username whose environment variables are to be retrieved.
+///
+/// # Returns
+///
+/// Returns a `Result<HashMap<String, String>, String>`. On success, the `Ok` variant contains
+/// the `HashMap` with environment variables. On failure, the `Err` variant contains an error message.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// 
+/// - There is an issue executing the command (e.g., command not found).
+/// - The command execution is not successful (including if the user does not exist).
+/// - There is an issue converting command output to UTF-8.
+///
+/// # Examples
+///
+/// ```no_run
+/// use your_crate_name::get_user_env_as_map;
+///
+/// let user = "example_user".to_string();
+/// match get_user_env_vars(user) {
+///     Ok(env_map) => println!("Environment Variables: {:?}", env_map),
+///     Err(e) => println!("Error: {}", e),
+/// }
+/// ```
+///
+pub fn get_user_env_vars(user: String) -> Result<HashMap<String, String>, String> {
+ // Check if EUID is 0 (root)
+ if get_effective_uid() == 0 {
+    // Execute the command and capture the output
+    let output = Command::new("su")
+        .arg("-")
+        .arg(user)
+        .arg("-c")
+        .arg("printenv")
+        .output()
+        .map_err(|e| e.to_string())?;
 
-    let mut elapsed_time = Duration::from_secs(0);
-
-    while elapsed_time < max_polling_time {
-        if fs::metadata(&extensions_json_path).is_ok() {
-            println!("File found at: {}", extensions_json_path);
-            return true;
-        }
-
-        // Sleep for the poll interval before checking again
-        sleep(poll_interval);
-        elapsed_time += poll_interval;
+    // Check for command execution errors
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into());
     }
 
-    println!("File not found within the polling time.");
-    false
+    // Convert the output bytes to a String
+    let output_str = String::from_utf8_lossy(&output.stdout);
+
+    // Parse each line of the output
+    let mut env_map = HashMap::new();
+    for line in output_str.lines() {
+        let mut split = line.splitn(2, '=');
+        if let (Some(key), Some(value)) = (split.next(), split.next()) {
+            env_map.insert(key.to_string(), value.to_string());
+        }
+    }
+    Ok(env_map)
+} else {
+    Err("Insufficient privileges: function requires root access.".to_string())
+}
 }
 
-pub fn login_as_user(username: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // Check if the user's home directory exists
-    let home_directory = format!("/data/user-homes/{}", username); // Modify the path as needed
-    if !Path::new(&home_directory).exists() {
-        println!("Home directory does not exist. Creating a PAM session to create it...");
-
-        // Initialize a PAM context
-        let mut context = Context::new(
-            "my-service",   // Service name
-            Some(username), // Preset username
-            pam_client::conv_null::Conversation::new(),
-        )?;
-
-        // Skip authentication if already done by other means (e.g., SSH key)
-
-        // Measure the time taken for PAM session creation
-        let start_time = Instant::now();
-
-        // Validate the account
-        context
-            .acct_mgmt(Flag::NONE)
-            .expect("Account validation failed");
-
-        // Open a session and initialize credentials
-        let mut _session = context
-            .open_session(Flag::SILENT)
-            .expect("Session opening failed");
-        // Calculate and print the elapsed time
-        let elapsed_time = start_time.elapsed();
-        println!("PAM session opened in {:.2?}.", elapsed_time);
-
-        let extensions_present = check_file_exists_with_polling(username);
-        let elapsed_time_to_extensions = start_time.elapsed();
-        if extensions_present {
-            println!(
-                "Extensions present in user home dir in {:.2?}.",
-                elapsed_time_to_extensions
-            );
-        } else {
-            println!(
-                "Extensions not present in user home dir in {:.2?}.",
-                elapsed_time_to_extensions
-            );
-        }
-    }
+/// Attempts to create a PAM session for a specified user.
+///
+/// This function initializes a PAM context for the given username and tries to
+/// open a session. It's intended for authentication and session management
+/// using PAM (Pluggable Authentication Modules).
+/// 
+/// This is particularly useful to prompt PAM to activated session related triggers
+/// such as pam_mkhomedir
+///
+/// # Parameters
+/// 
+/// * `username`: The username for which to create the PAM session. This should
+///   be a valid username on the system.
+///
+/// # Returns
+///
+/// If successful, returns `Ok(())`. On failure, returns a `Box<dyn std::error::Error>`
+/// with the error details.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// 
+/// - The PAM context cannot be initialized (e.g., if the provided username is invalid).
+/// - The account management step (`acct_mgmt`) fails.
+/// - The session cannot be opened.
+///
+/// # Examples
+///
+/// ```no_run
+/// use your_crate_name::try_user_pam_session;
+///
+/// let username = "example_user".to_string();
+/// match try_pam_session(username) {
+///     Ok(()) => println!("Session created successfully"),
+///     Err(e) => println!("Failed to create session: {}", e),
+/// }
+/// ```
+///
+pub fn try_pam_session(username: String) -> Result<(), Box<dyn std::error::Error>> {
+    let mut context = Context::new(
+        "polyjuice",     // Service name
+        Some(&username), // Preset username
+        pam_client::conv_null::Conversation::new(),
+    )?;
+    context.acct_mgmt(Flag::NONE)?;
+    let _session = context.open_session(Flag::SILENT)?;
     Ok(())
 }

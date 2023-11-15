@@ -1,4 +1,8 @@
 set positional-arguments
 
 login user:
-  ./target/debug/polyjuice --username {{user}}
+  sudo ./target/debug/polyjuice --username {{user}}
+
+buildlogin user:
+  cargo build
+  sudo ./target/debug/polyjuice --username {{user}}
