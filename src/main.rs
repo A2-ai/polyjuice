@@ -1,5 +1,4 @@
 use clap::Parser;
-use pam_client::Flag;
 use std::io::BufRead;
 use std::io::BufReader;
 use std::os::unix::process::CommandExt;
@@ -10,7 +9,7 @@ use std::fs;
 use users::get_user_by_name;
 use users::os::unix::UserExt;
 
-use polyjuice::{setup_pam_context, get_env_as_map};
+use polyjuice::{get_user_env_vars, try_pam_session};
 
 
 /// Define the command-line arguments and options using the clap derive pattern
@@ -54,25 +53,11 @@ fn main() {
     } else {
         println!("Error: Failed to access home directory at {}", home_dir);
         let start_time = Instant::now(); 
-        let mut ctx = setup_pam_context(args.username.clone()).unwrap_or_else(|e| {
-            println!("Error: {}", e);
-            std::process::exit(1);
-        });
-        let _session = ctx.open_session(Flag::SILENT).unwrap_or_else(|e| {
+        try_pam_session(args.username.clone()).unwrap_or_else(|e| {
             println!("Error: {}", e);
             std::process::exit(1);
         });
         println!("pam session created in {:?}", start_time.elapsed());
-        // TODO: lets not worry about pam env for now since we don't set any anyway
-        // need this to be in the proper ordering for this to actually work
-        // session.envlist().iter_tuples().for_each(|(key, value)| {
-        //     if !envs.contains_key(key.to_str().unwrap()) {
-        //         envs.insert(
-        //             key.to_str().unwrap().to_string(),
-        //             value.to_str().unwrap().to_string(),
-        //         );
-        //     }
-        // });
         if let Ok(metadata) = fs::metadata(home_dir) {
             if metadata.is_dir() {
                 println!("Home directory now exists: {}", home_dir);
@@ -82,7 +67,7 @@ fn main() {
         }
     }
     let start_time = Instant::now();
-    let envs = get_env_as_map(args.username.clone()).unwrap_or_else(|e| {
+    let envs = get_user_env_vars(args.username.clone()).unwrap_or_else(|e| {
         println!("Error: {}", e);
         std::process::exit(1);
     });
@@ -93,7 +78,6 @@ fn main() {
     println!("Time elapsed for getting envs is: {:?}", duration);
 
     let mut child = Command::new("R")
-        //.arg(r#"-e 'names(Sys.getenv()); message("USER: ", Sys.getenv("USER"), "\nHOME: ", Sys.getenv("HOME"),  "\nPATH: ", Sys.getenv("PATH"))'"#)
         .arg("-e")
         .arg(r#"names(Sys.getenv()); message("USER: ", Sys.getenv("USER"), "\nHOME: ", Sys.getenv("HOME"),  "\nPATH: ", Sys.getenv("PATH"))"#)
         //.arg(r#"R -e 'names(Sys.getenv()); message("USER: ", Sys.getenv("USER"), "\nHOME: ", Sys.getenv("HOME"),  "\nPATH: ", Sys.getenv("PATH"))'"#)
