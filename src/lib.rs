@@ -1,6 +1,8 @@
 use std::{fmt::Display, os::unix::process::CommandExt, process::Command};
 
 use env::get_user_env;
+
+#[cfg(feature = "pam")]
 use pam_client::{Context, Flag};
 
 mod env;
@@ -104,6 +106,7 @@ pub fn cmd_as_user(program: &str, username: String) -> Result<Command, CmdError>
 /// }
 /// ```
 ///
+#[cfg(feature = "pam")]
 pub fn try_pam_session(username: String) -> Result<(), Box<dyn std::error::Error>> {
     let mut context = Context::new(
         "polyjuice",     // Service name
