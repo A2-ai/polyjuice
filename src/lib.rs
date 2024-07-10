@@ -1,6 +1,7 @@
 use std::{fmt::Display, os::unix::process::CommandExt, process::Command};
 
 use env::get_user_env;
+use pam_client::{Context, Flag};
 
 mod env;
 
@@ -62,4 +63,54 @@ pub fn cmd_as_user(program: &str, username: String) -> Result<Command, CmdError>
     new_cmd.env_clear().envs(env);
 
     Ok(new_cmd)
+}
+
+/// Attempts to create a PAM session for a specified user.
+///
+/// This function initializes a PAM context for the given username and tries to
+/// open a session. It's intended for authentication and session management
+/// using PAM (Pluggable Authentication Modules).
+///
+/// This is particularly useful to prompt PAM to activated session related triggers
+/// such as pam_mkhomedir
+///
+/// # Parameters
+///
+/// * `username`: The username for which to create the PAM session. This should
+///   be a valid username on the system.
+///
+/// # Returns
+///
+/// If successful, returns `Ok(())`. On failure, returns a `Box<dyn std::error::Error>`
+/// with the error details.
+///
+/// # Errors
+///
+/// Returns an error if:
+///
+/// - The PAM context cannot be initialized (e.g., if the provided username is invalid).
+/// - The account management step (`acct_mgmt`) fails.
+/// - The session cannot be opened.
+///
+/// # Examples
+///
+/// ```no_run
+/// use your_crate_name::try_user_pam_session;
+///
+/// let username = "example_user".to_string();
+/// match try_pam_session(username) {
+///     Ok(()) => println!("Session created successfully"),
+///     Err(e) => println!("Failed to create session: {}", e),
+/// }
+/// ```
+///
+pub fn try_pam_session(username: String) -> Result<(), Box<dyn std::error::Error>> {
+    let mut context = Context::new(
+        "polyjuice",     // Service name
+        Some(&username), // Preset username
+        pam_client::conv_null::Conversation::new(),
+    )?;
+    context.acct_mgmt(Flag::NONE)?;
+    let _session = context.open_session(Flag::SILENT)?;
+    Ok(())
 }
