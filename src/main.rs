@@ -1,16 +1,13 @@
 use clap::Parser;
-use std::io::BufRead;
-use std::io::BufReader;
-use std::os::unix::process::CommandExt;
-use std::process::{Command, Stdio};
+use std::io::{BufRead, BufReader};
+use std::process::Stdio;
 use std::thread::{self};
 use std::time::Instant;
-use std::fs;
+use std::{fs, process};
 use users::get_user_by_name;
 use users::os::unix::UserExt;
 
-use polyjuice::{get_user_env_vars, try_pam_session};
-
+use polyjuice::{cmd_as_user, try_pam_session};
 
 /// Define the command-line arguments and options using the clap derive pattern
 #[derive(Parser, Debug, Clone)]
@@ -29,7 +26,7 @@ fn main() {
     let start_time = Instant::now();
     let user = get_user_by_name(&args.username.clone()).unwrap_or_else(|| {
         println!("Error: user {} does not exist", args.username);
-        std::process::exit(1);
+        process::exit(1);
     });
     println!("got user in {:?}", start_time.elapsed());
     let home_dir = user.home_dir().to_str().unwrap_or_else(|| {
@@ -37,12 +34,11 @@ fn main() {
             "Error: user {} does not have a home directory",
             args.username
         );
-        std::process::exit(1);
+        process::exit(1);
     });
     println!("UID: {}", user.uid());
     println!("GUID: {}", user.primary_group_id());
     println!("home_dir: {}", home_dir);
-
 
     if let Ok(metadata) = fs::metadata(home_dir) {
         if metadata.is_dir() {
@@ -52,7 +48,7 @@ fn main() {
         }
     } else {
         println!("Error: Failed to access home directory at {}", home_dir);
-        let start_time = Instant::now(); 
+        let start_time = Instant::now();
         try_pam_session(args.username.clone()).unwrap_or_else(|e| {
             println!("Error: {}", e);
             std::process::exit(1);
@@ -63,31 +59,27 @@ fn main() {
                 println!("Home directory now exists: {}", home_dir);
             } else {
                 eprintln!("Error: {} still doesn't exist", home_dir);
-            } 
+            }
         }
     }
     let start_time = Instant::now();
-    let envs = get_user_env_vars(args.username.clone()).unwrap_or_else(|e| {
-        println!("Error: {}", e);
-        std::process::exit(1);
-    });
 
     // add environmetn variables with those from the pam session
     // TODO: should the pam env replace? is this the right order or should it be the inverse?
     let duration = start_time.elapsed();
     println!("Time elapsed for getting envs is: {:?}", duration);
 
-    let mut child = Command::new("R")
+    let mut child = cmd_as_user("R", args.username.clone()).unwrap_or_else(|e| {
+        eprintln!("Error: {}", e);
+        process::exit(1);
+    })
         .arg("-e")
         .arg(r#"names(Sys.getenv()); message("USER: ", Sys.getenv("USER"), "\nHOME: ", Sys.getenv("HOME"),  "\nPATH: ", Sys.getenv("PATH"))"#)
         //.arg(r#"R -e 'names(Sys.getenv()); message("USER: ", Sys.getenv("USER"), "\nHOME: ", Sys.getenv("HOME"),  "\nPATH: ", Sys.getenv("PATH"))'"#)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .env_clear()
-        .envs(envs)
-        .uid(user.uid())
-        .spawn()
-        .expect("R command failed to start");
+        .spawn().expect("R command failed to start");
+
     // println!("R process started with pid {}", child.id());
     let stdout_reader = child.stdout.take().expect("Failed to open stdout");
     let stderr_reader = child.stderr.take().expect("Failed to open stderr");

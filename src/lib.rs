@@ -1,76 +1,68 @@
+use std::{fmt::Display, os::unix::process::CommandExt, process::Command};
+
+use env::get_user_env;
 use pam_client::{Context, Flag};
-use users::get_effective_uid; 
-use std::process::Command;
-use std::collections::HashMap;
 
+mod env;
 
-/// Retrieves the environment variables for a specified user as a map.
-///
-/// Starts a login shell as the user and returns the values
-/// in a `HashMap` where each key-value pair corresponds to
-/// an environment variable and its value.
+pub enum CmdError {
+    UserNotFound,
+    FailedGettingEnv(env::Error),
+}
+
+impl Display for CmdError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CmdError::UserNotFound => write!(f, "User not found"),
+            CmdError::FailedGettingEnv(e) => write!(f, "Failed to get user environment: {}", e),
+        }
+    }
+}
+
+/// This function creates a new command instance with the specified program and username.
+/// It retrieves the user's information and environment variables using the `users` and `env` modules.
+/// The new command is then configured with the user's UID, primary group ID, and environment variables.
 ///
 /// # Parameters
 ///
-/// * `user`: A `String` specifying the username whose environment variables are to be retrieved.
+/// * `program`: A string slice that represents the program to be executed.
+/// * `username`: A string that represents the username of the user for whom the command is being executed.
 ///
 /// # Returns
 ///
-/// Returns a `Result<HashMap<String, String>, String>`. On success, the `Ok` variant contains
-/// the `HashMap` with environment variables. On failure, the `Err` variant contains an error message.
+/// If successful, returns a `Result` containing the new `Command` instance.
+/// On failure, returns a `Result` containing a `SetRunUserError` variant.
 ///
 /// # Errors
 ///
-/// Returns an error if:
-/// 
-/// - There is an issue executing the command (e.g., command not found).
-/// - The command execution is not successful (including if the user does not exist).
-/// - There is an issue converting command output to UTF-8.
+/// Returns a `SetRunUserError::UserNotFound` error if the user is not found.
+/// Returns a `SetRunUserError::FailedGettingEnv` error if there is an issue getting the user's environment variables.
 ///
 /// # Examples
 ///
 /// ```no_run
-/// use your_crate_name::get_user_env_as_map;
+/// use your_crate_name::cmd_as_user;
 ///
-/// let user = "example_user".to_string();
-/// match get_user_env_vars(user) {
-///     Ok(env_map) => println!("Environment Variables: {:?}", env_map),
-///     Err(e) => println!("Error: {}", e),
+/// let program = "ls";
+/// let username = "example_user".to_string();
+/// match cmd_as_user(program, username) {
+///     Ok(cmd) => {
+///         // Use the new command instance
+///     }
+///     Err(e) => {
+///         // Handle the error
+///     }
 /// }
 /// ```
-///
-pub fn get_user_env_vars(user: String) -> Result<HashMap<String, String>, String> {
- // Check if EUID is 0 (root)
- if get_effective_uid() == 0 {
-    // Execute the command and capture the output
-    let output = Command::new("su")
-        .arg("-")
-        .arg(user)
-        .arg("-c")
-        .arg("printenv")
-        .output()
-        .map_err(|e| e.to_string())?;
+pub fn cmd_as_user(program: &str, username: String) -> Result<Command, CmdError> {
+    let user = users::get_user_by_name(&username).ok_or(CmdError::UserNotFound)?;
+    let env = get_user_env(username.clone()).map_err(|e| CmdError::FailedGettingEnv(e))?;
 
-    // Check for command execution errors
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).into());
-    }
+    let mut new_cmd = Command::new(program);
+    new_cmd.uid(user.uid()).gid(user.primary_group_id());
+    new_cmd.env_clear().envs(env);
 
-    // Convert the output bytes to a String
-    let output_str = String::from_utf8_lossy(&output.stdout);
-
-    // Parse each line of the output
-    let mut env_map = HashMap::new();
-    for line in output_str.lines() {
-        let mut split = line.splitn(2, '=');
-        if let (Some(key), Some(value)) = (split.next(), split.next()) {
-            env_map.insert(key.to_string(), value.to_string());
-        }
-    }
-    Ok(env_map)
-} else {
-    Err("Insufficient privileges: function requires root access.".to_string())
-}
+    Ok(new_cmd)
 }
 
 /// Attempts to create a PAM session for a specified user.
@@ -78,12 +70,12 @@ pub fn get_user_env_vars(user: String) -> Result<HashMap<String, String>, String
 /// This function initializes a PAM context for the given username and tries to
 /// open a session. It's intended for authentication and session management
 /// using PAM (Pluggable Authentication Modules).
-/// 
+///
 /// This is particularly useful to prompt PAM to activated session related triggers
 /// such as pam_mkhomedir
 ///
 /// # Parameters
-/// 
+///
 /// * `username`: The username for which to create the PAM session. This should
 ///   be a valid username on the system.
 ///
@@ -95,7 +87,7 @@ pub fn get_user_env_vars(user: String) -> Result<HashMap<String, String>, String
 /// # Errors
 ///
 /// Returns an error if:
-/// 
+///
 /// - The PAM context cannot be initialized (e.g., if the provided username is invalid).
 /// - The account management step (`acct_mgmt`) fails.
 /// - The session cannot be opened.
