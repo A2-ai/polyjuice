@@ -4,6 +4,7 @@ use env::get_user_env;
 
 #[cfg(feature = "pam")]
 use pam_client::{Context, Flag};
+use users::User;
 
 mod env;
 
@@ -56,9 +57,69 @@ impl Display for CmdError {
 ///     }
 /// }
 /// ```
-pub fn cmd_as_user(program: &str, username: String) -> Result<Command, CmdError> {
+pub fn cmd_as_username(program: &str, username: String) -> Result<Command, CmdError> {
     let user = users::get_user_by_name(&username).ok_or(CmdError::UserNotFound)?;
-    let env = get_user_env(username.clone()).map_err(|e| CmdError::FailedGettingEnv(e))?;
+    cmd_as_user(program, user).map_err(|e| CmdError::FailedGettingEnv(e))
+}
+
+/// Creates a new command instance configured to run as a specific user.
+///
+/// This function takes a program name and a `User` object, and returns a `Command`
+/// instance that, when executed, will run the specified program with the privileges
+/// and environment of the given user.
+///
+/// # Parameters
+///
+/// * `program`: A string slice representing the name or path of the program to be executed.
+/// * `user`: A `User` object representing the user as whom the command should be run.
+///
+/// # Returns
+///
+/// Returns a `Result` containing:
+/// - `Ok(Command)`: A configured `Command` instance if successful.
+/// - `Err(env::Error)`: An error if retrieving the user's environment variables fails.
+///
+/// # Details
+///
+/// The function performs the following steps:
+/// 1. Retrieves the user's environment variables.
+/// 2. Creates a new `Command` instance for the specified program.
+/// 3. Sets the UID and GID of the command to match the specified user.
+/// 4. Clears any existing environment variables and sets them to the user's environment.
+///
+/// # Errors
+///
+/// This function will return an `Err` if:
+/// - The call to `get_user_env` fails, which could happen if the user's environment
+///   cannot be retrieved or parsed correctly.
+///
+/// # Examples
+///
+/// ```no_run
+/// use users::User;
+/// use your_crate_name::cmd_as_user;
+///
+/// let user = User::from_uid(1000).expect("Failed to get user");
+/// match cmd_as_user("ls", user) {
+///     Ok(mut cmd) => {
+///         // The command is now configured to run as the specified user
+///         cmd.arg("-l");
+///         let output = cmd.output().expect("Failed to execute command");
+///         println!("Command output: {:?}", output);
+///     },
+///     Err(e) => eprintln!("Failed to create command: {}", e),
+/// }
+/// ```
+///
+/// # Security Considerations
+///
+/// This function allows running commands as different users, which can have significant
+/// security implications. Ensure that:
+/// - The calling process has the necessary privileges to switch users.
+/// - The `program` parameter is properly sanitized to prevent command injection.
+/// - The `User` object is obtained from a trusted source.
+pub fn cmd_as_user(program: &str, user: User) -> Result<Command, env::Error> {
+    let env = get_user_env(user.name().to_string_lossy().to_string())?;
 
     let mut new_cmd = Command::new(program);
     new_cmd.uid(user.uid()).gid(user.primary_group_id());
