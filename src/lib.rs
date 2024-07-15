@@ -8,6 +8,7 @@ use users::User;
 
 mod env;
 
+#[derive(Debug)]
 pub enum CmdError {
     UserNotFound,
     FailedGettingEnv(env::Error),

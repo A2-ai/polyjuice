@@ -4,6 +4,7 @@ use std::io;
 use std::process::Command;
 use users::get_effective_uid;
 
+#[derive(Debug)]
 pub enum Error {
     InsufficientPrivileges,
     FailedExecutingCommand(io::Error),
