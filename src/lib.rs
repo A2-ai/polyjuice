@@ -1,4 +1,4 @@
-use std::{fmt::Display, os::unix::process::CommandExt, process::Command};
+use std::{ffi::OsStr, fmt::Display, os::unix::process::CommandExt, process::Command};
 
 use env::get_user_env;
 
@@ -58,9 +58,12 @@ impl Display for CmdError {
 ///     }
 /// }
 /// ```
-pub fn cmd_as_username(program: &str, username: String) -> Result<Command, CmdError> {
+pub fn cmd_as_username(
+    program: impl AsRef<OsStr>,
+    username: impl AsRef<OsStr>,
+) -> Result<Command, CmdError> {
     let user = users::get_user_by_name(&username).ok_or(CmdError::UserNotFound)?;
-    cmd_as_user(program, user).map_err(|e| CmdError::FailedGettingEnv(e))
+    cmd_as_user(&program, user).map_err(|e| CmdError::FailedGettingEnv(e))
 }
 
 /// Creates a new command instance configured to run as a specific user.
@@ -119,7 +122,7 @@ pub fn cmd_as_username(program: &str, username: String) -> Result<Command, CmdEr
 /// - The calling process has the necessary privileges to switch users.
 /// - The `program` parameter is properly sanitized to prevent command injection.
 /// - The `User` object is obtained from a trusted source.
-pub fn cmd_as_user(program: &str, user: User) -> Result<Command, env::Error> {
+pub fn cmd_as_user(program: impl AsRef<OsStr>, user: User) -> Result<Command, env::Error> {
     let env = get_user_env(user.name().to_string_lossy().to_string())?;
 
     let mut new_cmd = Command::new(program);
