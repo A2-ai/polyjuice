@@ -4,7 +4,7 @@ use env::get_user_env;
 
 #[cfg(feature = "pam")]
 use pam_client::{Context, Flag};
-use users::User;
+use uzers::User;
 
 mod env;
 
@@ -62,7 +62,7 @@ pub fn cmd_as_username(
     program: impl AsRef<OsStr>,
     username: impl AsRef<OsStr>,
 ) -> Result<Command, CmdError> {
-    let user = users::get_user_by_name(&username).ok_or(CmdError::UserNotFound)?;
+    let user = uzers::get_user_by_name(&username).ok_or(CmdError::UserNotFound)?;
     cmd_as_user(&program, user).map_err(|e| CmdError::FailedGettingEnv(e))
 }
 

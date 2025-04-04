@@ -1,24 +1,17 @@
 use std::collections::HashMap;
-use std::fmt::Display;
 use std::io;
 use std::process::Command;
-use users::get_effective_uid;
+use thiserror::Error;
+use uzers::get_effective_uid;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum Error {
+    #[error("Insufficient privileges")]
     InsufficientPrivileges,
+    #[error("Failed executing command: {0}")]
     FailedExecutingCommand(io::Error),
+    #[error("Command exited: {0}")]
     CommandExited(String),
-}
-
-impl Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::InsufficientPrivileges => write!(f, "Insufficient privileges"),
-            Error::FailedExecutingCommand(e) => write!(f, "Failed executing command: {}", e),
-            Error::CommandExited(e) => write!(f, "Command exited: {}", e),
-        }
-    }
 }
 
 pub fn get_user_env(user: String) -> Result<HashMap<String, String>, Error> {
