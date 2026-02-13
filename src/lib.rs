@@ -1,10 +1,11 @@
+use std::ffi::OsString;
 use std::{ffi::OsStr, fmt::Display, os::unix::process::CommandExt, process::Command};
 
 use env::get_user_env;
 
-#[cfg(feature = "pam")]
-use pam_client::{Context, Flag};
-use users::User;
+use nonstick::TransactionBuilder;
+use nonstick::{ConversationAdapter, Result as PamResult};
+use uzers::User;
 
 mod env;
 
@@ -62,7 +63,7 @@ pub fn cmd_as_username(
     program: impl AsRef<OsStr>,
     username: impl AsRef<OsStr>,
 ) -> Result<Command, CmdError> {
-    let user = users::get_user_by_name(&username).ok_or(CmdError::UserNotFound)?;
+    let user = uzers::get_user_by_name(&username).ok_or(CmdError::UserNotFound)?;
     cmd_as_user(&program, user).map_err(|e| CmdError::FailedGettingEnv(e))
 }
 
@@ -132,6 +133,41 @@ pub fn cmd_as_user(program: impl AsRef<OsStr>, user: User) -> Result<Command, en
     Ok(new_cmd)
 }
 
+struct UsernamePassConvo {
+    username: String,
+    password: String,
+}
+
+// ConversationAdapter is a convenience wrapper for the common case
+// of only handling one request at a time.
+impl ConversationAdapter for UsernamePassConvo {
+    fn prompt(&self, _request: impl AsRef<OsStr>) -> PamResult<OsString> {
+        Ok(OsString::from(&self.username))
+    }
+
+    fn masked_prompt(&self, _request: impl AsRef<OsStr>) -> PamResult<OsString> {
+        Ok(OsString::from(&self.password))
+    }
+
+    fn error_msg(&self, _message: impl AsRef<OsStr>) {
+        // Normally you would want to display this to the user somehow.
+        // In this case, we're just ignoring it.
+    }
+
+    fn info_msg(&self, _message: impl AsRef<OsStr>) {
+        // ibid.
+    }
+    fn radio_prompt(&self, request: impl AsRef<OsStr>) -> nonstick::Result<std::ffi::OsString> {
+        let _ = request;
+        Err(nonstick::ErrorCode::ConversationError)
+    }
+
+    fn binary_prompt(&self, data_and_type: (&[u8], u8)) -> nonstick::Result<nonstick::BinaryData> {
+        let _ = data_and_type;
+        Err(nonstick::ErrorCode::ConversationError)
+    }
+}
+
 /// Attempts to create a PAM session for a specified user.
 ///
 /// This function initializes a PAM context for the given username and tries to
@@ -171,14 +207,18 @@ pub fn cmd_as_user(program: impl AsRef<OsStr>, user: User) -> Result<Command, en
 /// }
 /// ```
 ///
-#[cfg(feature = "pam")]
 pub fn try_pam_session(username: String) -> Result<(), Box<dyn std::error::Error>> {
-    let mut context = Context::new(
-        "polyjuice",     // Service name
-        Some(&username), // Preset username
-        pam_client::conv_null::Conversation::new(),
-    )?;
-    context.acct_mgmt(Flag::NONE)?;
-    let _session = context.open_session(Flag::SILENT)?;
+    TransactionBuilder::new_with_service("polyjuice")
+        .username(&username)
+        .build(
+            UsernamePassConvo {
+                username,
+                password: "".to_string(),
+            }
+            .into_conversation(),
+        )?;
+
+    // TODO: is the session started at this point?
+
     Ok(())
 }

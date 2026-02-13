@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::io;
 use std::process::Command;
-use users::get_effective_uid;
+use uzers::get_effective_uid;
 
 #[derive(Debug)]
 pub enum Error {
