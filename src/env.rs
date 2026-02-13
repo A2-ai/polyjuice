@@ -21,17 +21,21 @@ impl Display for Error {
     }
 }
 
+/// Returns environment variables for `user` from that user's login shell.
+///
+/// The command runs through `su - ... -c` and executes `"$SHELL" -lc "env -0"`,
+/// which is a login, non-interactive shell invocation.
 pub fn get_user_env(user: String) -> Result<HashMap<String, String>, Error> {
     if get_effective_uid() != 0 {
         return Err(Error::InsufficientPrivileges);
     }
 
-    // Execute the command and capture the output
+    // Execute the command and capture null-delimited environment output.
     let output = Command::new("su")
         .arg("-")
         .arg(user)
         .arg("-c")
-        .arg("printenv")
+        .arg(r#"exec "$SHELL" -lc "env -0""#)
         .output()
         .map_err(|e| Error::FailedExecutingCommand(e))?;
 
@@ -42,13 +46,14 @@ pub fn get_user_env(user: String) -> Result<HashMap<String, String>, Error> {
         ));
     }
 
-    // Convert the output bytes to a String
-    let output_str = String::from_utf8_lossy(&output.stdout);
-
-    // Parse each line of the output
+    // Parse null-delimited KEY=VALUE entries from env -0.
     let mut env_map = HashMap::new();
-    for line in output_str.lines() {
-        let mut split = line.splitn(2, '=');
+    for entry in output.stdout.split(|b| *b == b'\0') {
+        if entry.is_empty() {
+            continue;
+        }
+        let entry_str = String::from_utf8_lossy(entry);
+        let mut split = entry_str.splitn(2, '=');
         if let (Some(key), Some(value)) = (split.next(), split.next()) {
             env_map.insert(key.to_string(), value.to_string());
         }
