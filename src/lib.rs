@@ -1,4 +1,9 @@
-use std::{ffi::OsStr, fmt::Display, os::unix::process::CommandExt, process::Command};
+use std::{
+    ffi::{CString, OsStr},
+    fmt::Display,
+    os::unix::process::CommandExt,
+    process::Command,
+};
 
 use env::get_user_env;
 
@@ -126,7 +131,35 @@ pub fn cmd_as_user(program: impl AsRef<OsStr>, user: User) -> Result<Command, en
     let env = get_user_env(user.name().to_string_lossy().to_string())?;
 
     let mut new_cmd = Command::new(program);
-    new_cmd.uid(user.uid()).gid(user.primary_group_id());
+    let uid = user.uid();
+    let primary_gid = user.primary_group_id();
+    // Route supplementary group resolution through NSS via libc::initgroups so
+    // SSSD/LDAP-provided memberships are honored — a raw setgroups syscall
+    // would only see /etc/group. We deliberately do not use Command::uid/gid:
+    // std drops privileges before running pre_exec closures, which would make
+    // initgroups fail with EPERM. Instead handle the full drop here in order:
+    // initgroups (needs root) → setgid → setuid.
+    let name = CString::new(user.name().to_string_lossy().as_bytes())
+        .expect("username from passwd database must not contain a NUL byte");
+    // initgroups' basegroup parameter is gid_t on Linux but c_int on the BSDs.
+    #[cfg(target_os = "macos")]
+    let basegroup: libc::c_int = primary_gid as libc::c_int;
+    #[cfg(not(target_os = "macos"))]
+    let basegroup: libc::gid_t = primary_gid as libc::gid_t;
+    unsafe {
+        new_cmd.pre_exec(move || {
+            if libc::initgroups(name.as_ptr(), basegroup) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::setgid(primary_gid as libc::gid_t) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::setuid(uid as libc::uid_t) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     new_cmd.env_clear().envs(env);
 
     Ok(new_cmd)
