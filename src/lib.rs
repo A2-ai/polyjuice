@@ -1,5 +1,5 @@
 use std::{
-    ffi::{CString, OsStr},
+    ffi::{CStr, CString, OsStr},
     fmt::Display,
     os::unix::process::CommandExt,
     process::Command,
@@ -130,25 +130,27 @@ pub fn cmd_as_username(
 pub fn cmd_as_user(program: impl AsRef<OsStr>, user: User) -> Result<Command, env::Error> {
     let env = get_user_env(user.name().to_string_lossy().to_string())?;
 
-    let mut new_cmd = Command::new(program);
     let uid = user.uid();
     let primary_gid = user.primary_group_id();
-    // Route supplementary group resolution through NSS via libc::initgroups so
-    // SSSD/LDAP-provided memberships are honored — a raw setgroups syscall
-    // would only see /etc/group. We deliberately do not use Command::uid/gid:
-    // std drops privileges before running pre_exec closures, which would make
-    // initgroups fail with EPERM. Instead handle the full drop here in order:
-    // initgroups (needs root) → setgid → setuid.
+
+    // Resolve the user's full supplementary group list IN THE PARENT, where
+    // calling into NSS is safe. Doing this from inside pre_exec runs after
+    // fork() in a multi-threaded program (Tokio), which is undefined per POSIX
+    // and in practice causes NSS modules like nss_sss / nss_ldap to silently
+    // return only locally-resolvable groups — dropping all LDAP/SSSD-provided
+    // memberships. The child would then EPERM on chown/setgid to any group
+    // that lives outside /etc/group.
     let name = CString::new(user.name().to_string_lossy().as_bytes())
         .expect("username from passwd database must not contain a NUL byte");
-    // initgroups' basegroup parameter is gid_t on Linux but c_int on the BSDs.
-    #[cfg(target_os = "macos")]
-    let basegroup: libc::c_int = primary_gid as libc::c_int;
-    #[cfg(not(target_os = "macos"))]
-    let basegroup: libc::gid_t = primary_gid as libc::gid_t;
+    let groups = getgrouplist(&name, primary_gid).map_err(env::Error::GroupLookupFailed)?;
+
+    let mut new_cmd = Command::new(program);
     unsafe {
         new_cmd.pre_exec(move || {
-            if libc::initgroups(name.as_ptr(), basegroup) != 0 {
+            // Between fork() and execve() only async-signal-safe syscalls are
+            // valid in a multi-threaded program. setgroups / setgid / setuid
+            // are all single syscalls and safe; libc::initgroups is not.
+            if libc::setgroups(groups.len() as _, groups.as_ptr()) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
             if libc::setgid(primary_gid as libc::gid_t) != 0 {
@@ -163,6 +165,57 @@ pub fn cmd_as_user(program: impl AsRef<OsStr>, user: User) -> Result<Command, en
     new_cmd.env_clear().envs(env);
 
     Ok(new_cmd)
+}
+
+// On Linux glibc, getgrouplist takes (uid_t/gid_t) for basegroup and a
+// *mut gid_t buffer. On macOS the same function takes c_int basegroup and a
+// *mut c_int buffer. We resolve via the platform-appropriate signature, then
+// normalize to Vec<gid_t> for the caller (setgroups takes *const gid_t on
+// both platforms).
+#[cfg(not(target_os = "macos"))]
+fn getgrouplist(name: &CStr, primary_gid: u32) -> std::io::Result<Vec<libc::gid_t>> {
+    let basegroup = primary_gid as libc::gid_t;
+    let mut ngroups: libc::c_int = 64;
+    loop {
+        let cap = ngroups as usize;
+        let mut buf: Vec<libc::gid_t> = vec![0; cap];
+        let rc = unsafe {
+            libc::getgrouplist(name.as_ptr(), basegroup, buf.as_mut_ptr(), &mut ngroups)
+        };
+        if rc >= 0 {
+            buf.truncate(ngroups as usize);
+            return Ok(buf);
+        }
+        if (ngroups as usize) <= cap {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "getgrouplist failed without growing ngroups",
+            ));
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn getgrouplist(name: &CStr, primary_gid: u32) -> std::io::Result<Vec<libc::gid_t>> {
+    let basegroup = primary_gid as libc::c_int;
+    let mut ngroups: libc::c_int = 64;
+    loop {
+        let cap = ngroups as usize;
+        let mut buf: Vec<libc::c_int> = vec![0; cap];
+        let rc = unsafe {
+            libc::getgrouplist(name.as_ptr(), basegroup, buf.as_mut_ptr(), &mut ngroups)
+        };
+        if rc >= 0 {
+            buf.truncate(ngroups as usize);
+            return Ok(buf.into_iter().map(|g| g as libc::gid_t).collect());
+        }
+        if (ngroups as usize) <= cap {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "getgrouplist failed without growing ngroups",
+            ));
+        }
+    }
 }
 
 /// Attempts to create a PAM session for a specified user.

@@ -9,6 +9,7 @@ pub enum Error {
     InsufficientPrivileges,
     FailedExecutingCommand(io::Error),
     CommandExited(String),
+    GroupLookupFailed(io::Error),
 }
 
 impl Display for Error {
@@ -17,6 +18,7 @@ impl Display for Error {
             Error::InsufficientPrivileges => write!(f, "Insufficient privileges"),
             Error::FailedExecutingCommand(e) => write!(f, "Failed executing command: {}", e),
             Error::CommandExited(e) => write!(f, "Command exited: {}", e),
+            Error::GroupLookupFailed(e) => write!(f, "Failed looking up user groups: {}", e),
         }
     }
 }
