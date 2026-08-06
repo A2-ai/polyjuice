@@ -83,10 +83,17 @@ pub fn cmd_as_username(
         .as_ref()
         .to_str()
         .ok_or(CmdError::InvalidUsername)?;
-
+    
     let user = User::from_name(username)
-        .map_err(CmdError::UserLookupFailed)?
-        .ok_or(CmdError::UserNotFound)?;
+    .map_err(|e| match e {
+        // glibc documents ENOENT from getpwnam_r as "no entry found"; some
+        // NSS modules (nss_sss / nss_ldap) report missing users this way
+        // instead of the POSIX success-with-NULL convention.
+        nix::Error::ENOENT => CmdError::UserNotFound,
+        e => CmdError::UserLookupFailed(e),
+    })?
+    .ok_or(CmdError::UserNotFound)?;
+
     cmd_as_user(&program, user).map_err(CmdError::FailedGettingEnv)
 }
 
@@ -294,7 +301,10 @@ mod tests {
     #[test]
     fn unknown_user_is_user_not_found() {
         let result = cmd_as_username("ls", "polyjuice_no_such_user");
-        assert!(matches!(result, Err(CmdError::UserNotFound)));
+        assert!(
+            matches!(result, Err(CmdError::UserNotFound)),
+            "expected UserNotFound, got: {result:?}"
+        );
     }
 
     // nix's User::from_name maps a NUL-containing name to Ok(None) rather
