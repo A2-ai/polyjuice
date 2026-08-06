@@ -9,13 +9,16 @@ use env::get_user_env;
 
 #[cfg(feature = "pam")]
 use pam_client::{Context, Flag};
-use users::User;
+
+use nix::unistd::User;
 
 mod env;
 
 #[derive(Debug)]
 pub enum CmdError {
     UserNotFound,
+    InvalidUsername,
+    UserLookupFailed(nix::Error),
     FailedGettingEnv(env::Error),
 }
 
@@ -23,38 +26,47 @@ impl Display for CmdError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CmdError::UserNotFound => write!(f, "User not found"),
+            CmdError::InvalidUsername => write!(f, "Invalid username"),
+            CmdError::UserLookupFailed(e) => write!(f, "Failed to look up user: {}", e),
             CmdError::FailedGettingEnv(e) => write!(f, "Failed to get user environment: {}", e),
         }
     }
 }
 
 /// This function creates a new command instance with the specified program and username.
-/// It retrieves the user's information and environment variables using the `users` and `env` modules.
+/// It retrieves the user's information and environment variables using the `nix` crate and `env` module.
 /// The new command is then configured with the user's UID, primary group ID, and environment variables.
 ///
 /// # Parameters
 ///
-/// * `program`: A string slice that represents the program to be executed.
-/// * `username`: A string that represents the username of the user for whom the command is being executed.
+/// * `program`: The command or path to execute.
+/// * `username`: The target username. Any value implementing `AsRef<OsStr>` is
+///   accepted; non-UTF-8 values return [`CmdError::InvalidUsername`].
 ///
 /// # Returns
 ///
-/// If successful, returns a `Result` containing the new `Command` instance.
-/// On failure, returns a `Result` containing a `SetRunUserError` variant.
+/// Returns a configured [`Command`] on success, or a [`CmdError`] if the
+/// username cannot be validated or resolved, or the target environment cannot
+/// be retrieved.
 ///
 /// # Errors
 ///
-/// Returns a `SetRunUserError::UserNotFound` error if the user is not found.
-/// Returns a `SetRunUserError::FailedGettingEnv` error if there is an issue getting the user's environment variables.
+/// Returns:
+///
+/// - [`CmdError::InvalidUsername`] when `username` is not valid UTF-8.
+/// - [`CmdError::UserNotFound`] when no matching user exists.
+/// - [`CmdError::UserLookupFailed`] when the system user lookup fails.
+/// - [`CmdError::FailedGettingEnv`] when the target user's environment cannot
+///   be retrieved.
 ///
 /// # Examples
 ///
 /// ```no_run
-/// use your_crate_name::cmd_as_user;
+/// use polyjuice::cmd_as_username;
 ///
 /// let program = "ls";
-/// let username = "example_user".to_string();
-/// match cmd_as_user(program, username) {
+/// let username = "example_user";
+/// match cmd_as_username(program, username) {
 ///     Ok(cmd) => {
 ///         // Use the new command instance
 ///     }
@@ -67,8 +79,22 @@ pub fn cmd_as_username(
     program: impl AsRef<OsStr>,
     username: impl AsRef<OsStr>,
 ) -> Result<Command, CmdError> {
-    let user = users::get_user_by_name(&username).ok_or(CmdError::UserNotFound)?;
-    cmd_as_user(&program, user).map_err(|e| CmdError::FailedGettingEnv(e))
+    let username = username
+        .as_ref()
+        .to_str()
+        .ok_or(CmdError::InvalidUsername)?;
+    
+    let user = User::from_name(username)
+    .map_err(|e| match e {
+        // glibc documents ENOENT from getpwnam_r as "no entry found"; some
+        // NSS modules (nss_sss / nss_ldap) report missing users this way
+        // instead of the POSIX success-with-NULL convention.
+        nix::Error::ENOENT => CmdError::UserNotFound,
+        e => CmdError::UserLookupFailed(e),
+    })?
+    .ok_or(CmdError::UserNotFound)?;
+
+    cmd_as_user(&program, user).map_err(CmdError::FailedGettingEnv)
 }
 
 /// Creates a new command instance configured to run as a specific user.
@@ -105,10 +131,12 @@ pub fn cmd_as_username(
 /// # Examples
 ///
 /// ```no_run
-/// use users::User;
-/// use your_crate_name::cmd_as_user;
+/// use nix::unistd::{Uid, User};
+/// use polyjuice::cmd_as_user;
 ///
-/// let user = User::from_uid(1000).expect("Failed to get user");
+/// let user = User::from_uid(Uid::from_raw(1000))
+///     .expect("user lookup failed")
+///     .expect("no user with uid 1000");
 /// match cmd_as_user("ls", user) {
 ///     Ok(mut cmd) => {
 ///         // The command is now configured to run as the specified user
@@ -128,10 +156,10 @@ pub fn cmd_as_username(
 /// - The `program` parameter is properly sanitized to prevent command injection.
 /// - The `User` object is obtained from a trusted source.
 pub fn cmd_as_user(program: impl AsRef<OsStr>, user: User) -> Result<Command, env::Error> {
-    let env = get_user_env(user.name().to_string_lossy().to_string())?;
+    let env = get_user_env(&user.name)?;
 
-    let uid = user.uid();
-    let primary_gid = user.primary_group_id();
+    let uid = user.uid.as_raw();
+    let primary_gid = user.gid.as_raw();
 
     // Resolve the user's full supplementary group list IN THE PARENT, where
     // calling into NSS is safe. Doing this from inside pre_exec runs after
@@ -140,7 +168,7 @@ pub fn cmd_as_user(program: impl AsRef<OsStr>, user: User) -> Result<Command, en
     // return only locally-resolvable groups — dropping all LDAP/SSSD-provided
     // memberships. The child would then EPERM on chown/setgid to any group
     // that lives outside /etc/group.
-    let name = CString::new(user.name().to_string_lossy().as_bytes())
+    let name = CString::new(user.name.as_bytes())
         .expect("username from passwd database must not contain a NUL byte");
     let groups = getgrouplist(&name, primary_gid).map_err(env::Error::GroupLookupFailed)?;
 
@@ -179,9 +207,8 @@ fn getgrouplist(name: &CStr, primary_gid: u32) -> std::io::Result<Vec<libc::gid_
     loop {
         let cap = ngroups as usize;
         let mut buf: Vec<libc::gid_t> = vec![0; cap];
-        let rc = unsafe {
-            libc::getgrouplist(name.as_ptr(), basegroup, buf.as_mut_ptr(), &mut ngroups)
-        };
+        let rc =
+            unsafe { libc::getgrouplist(name.as_ptr(), basegroup, buf.as_mut_ptr(), &mut ngroups) };
         if rc >= 0 {
             buf.truncate(ngroups as usize);
             return Ok(buf);
@@ -202,16 +229,14 @@ fn getgrouplist(name: &CStr, primary_gid: u32) -> std::io::Result<Vec<libc::gid_
     loop {
         let cap = ngroups as usize;
         let mut buf: Vec<libc::c_int> = vec![0; cap];
-        let rc = unsafe {
-            libc::getgrouplist(name.as_ptr(), basegroup, buf.as_mut_ptr(), &mut ngroups)
-        };
+        let rc =
+            unsafe { libc::getgrouplist(name.as_ptr(), basegroup, buf.as_mut_ptr(), &mut ngroups) };
         if rc >= 0 {
             buf.truncate(ngroups as usize);
             return Ok(buf.into_iter().map(|g| g as libc::gid_t).collect());
         }
         if (ngroups as usize) <= cap {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "getgrouplist failed without growing ngroups",
             ));
         }
@@ -267,4 +292,86 @@ pub fn try_pam_session(username: String) -> Result<(), Box<dyn std::error::Error
     context.acct_mgmt(Flag::NONE)?;
     let _session = context.open_session(Flag::SILENT)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_user_is_user_not_found() {
+        let result = cmd_as_username("ls", "polyjuice_no_such_user");
+        assert!(
+            matches!(result, Err(CmdError::UserNotFound)),
+            "expected UserNotFound, got: {result:?}"
+        );
+    }
+
+    // nix's User::from_name maps a NUL-containing name to Ok(None) rather
+    // than an error, so this must surface as UserNotFound.
+    #[test]
+    fn nul_in_username_is_user_not_found() {
+        let result = cmd_as_username("ls", "root\0oops");
+        assert!(matches!(result, Err(CmdError::UserNotFound)));
+    }
+
+    // Without root the lookup succeeds but fetching the user's env is
+    // refused. This runs in a plain `cargo test`; it will fail if the suite
+    // is run as root.
+    #[test]
+    fn known_user_without_root_fails_getting_env() {
+        let me = User::from_uid(nix::unistd::getuid())
+            .expect("uid lookup failed")
+            .expect("current uid has no passwd entry");
+
+        let result = cmd_as_username("ls", &me.name);
+
+        assert!(matches!(
+            result,
+            Err(CmdError::FailedGettingEnv(
+                env::Error::InsufficientPrivileges
+            ))
+        ));
+    }
+
+    // End-to-end: build the command as SUDO_USER, actually run `id -u`, and
+    // check the child process really became that user.
+    #[test]
+    #[ignore = "requires root: sudo cargo test -- --ignored"]
+    fn runs_program_as_target_user() {
+        let username = std::env::var("SUDO_USER")
+            .expect("SUDO_USER not set; run via `sudo cargo test -- --ignored`");
+        let expected_uid = User::from_name(&username)
+            .expect("user lookup failed")
+            .expect("SUDO_USER has no passwd entry")
+            .uid;
+
+        let mut cmd = cmd_as_username("id", &username).expect("cmd_as_username failed");
+        let output = cmd.arg("-u").output().expect("failed running id");
+
+        assert!(output.status.success());
+        let uid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        assert_eq!(uid, expected_uid.as_raw().to_string());
+    }
+
+    // Same end-to-end check, but the child is forked (pre_exec) while the
+    // multi-threaded Tokio runtime's worker threads are alive — the exact
+    // scenario the group-resolution comments in cmd_as_user are about.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires root: sudo cargo test -- --ignored"]
+    async fn runs_program_as_target_user_tokio() {
+        let username = std::env::var("SUDO_USER")
+            .expect("SUDO_USER not set; run via `sudo cargo test -- --ignored`");
+        let expected_uid = User::from_name(&username)
+            .expect("user lookup failed")
+            .expect("SUDO_USER has no passwd entry")
+            .uid;
+
+        let mut cmd = cmd_as_username("id", &username).expect("cmd_as_username failed");
+        let output = cmd.arg("-u").output().expect("failed running id");
+
+        assert!(output.status.success());
+        let uid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        assert_eq!(uid, expected_uid.as_raw().to_string());
+    }
 }
