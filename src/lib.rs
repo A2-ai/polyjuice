@@ -17,6 +17,7 @@ mod env;
 #[derive(Debug)]
 pub enum CmdError {
     UserNotFound,
+    InvalidUsername,
     UserLookupFailed(nix::Error),
     FailedGettingEnv(env::Error),
 }
@@ -25,6 +26,7 @@ impl Display for CmdError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CmdError::UserNotFound => write!(f, "User not found"),
+            CmdError::InvalidUsername => write!(f, "Invalid username"),
             CmdError::UserLookupFailed(e) => write!(f, "Failed to look up user: {}", e),
             CmdError::FailedGettingEnv(e) => write!(f, "Failed to get user environment: {}", e),
         }
@@ -66,7 +68,12 @@ impl Display for CmdError {
 ///     }
 /// }
 /// ```
-pub fn cmd_as_username(program: impl AsRef<OsStr>, username: &str) -> Result<Command, CmdError> {
+pub fn cmd_as_username(program: impl AsRef<OsStr>, username: impl AsRef<OsStr>) -> Result<Command, CmdError> {
+    let username = username
+        .as_ref()
+        .to_str()
+        .ok_or(CmdError::InvalidUsername)?;
+
     let user = User::from_name(username)
         .map_err(CmdError::UserLookupFailed)?
         .ok_or(CmdError::UserNotFound)?;
