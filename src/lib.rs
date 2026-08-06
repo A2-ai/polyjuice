@@ -50,11 +50,11 @@ impl Display for CmdError {
 /// # Examples
 ///
 /// ```no_run
-/// use your_crate_name::cmd_as_user;
+/// use polyjuice::cmd_as_username;
 ///
 /// let program = "ls";
 /// let username = "example_user".to_string();
-/// match cmd_as_user(program, username) {
+/// match cmd_as_username(program, username) {
 ///     Ok(cmd) => {
 ///         // Use the new command instance
 ///     }
@@ -105,10 +105,10 @@ pub fn cmd_as_username(
 /// # Examples
 ///
 /// ```no_run
-/// use users::User;
-/// use your_crate_name::cmd_as_user;
+/// use users::get_user_by_uid;
+/// use polyjuice::cmd_as_user;
 ///
-/// let user = User::from_uid(1000).expect("Failed to get user");
+/// let user = get_user_by_uid(1000).expect("Failed to get user");
 /// match cmd_as_user("ls", user) {
 ///     Ok(mut cmd) => {
 ///         // The command is now configured to run as the specified user
