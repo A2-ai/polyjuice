@@ -3,6 +3,7 @@ use std::fmt::Display;
 use std::io;
 use std::process::Command;
 use users::get_effective_uid;
+use nix::unistd::geteuid;
 
 #[derive(Debug)]
 pub enum Error {
@@ -28,7 +29,7 @@ impl Display for Error {
 /// The command runs through `su - ... -c` and executes `"$SHELL" -lc "env -0"`,
 /// which is a login, non-interactive shell invocation.
 pub fn get_user_env(user: String) -> Result<HashMap<String, String>, Error> {
-    if get_effective_uid() != 0 {
+    if geteuid() != 0.into() {
         return Err(Error::InsufficientPrivileges);
     }
 
