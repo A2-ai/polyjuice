@@ -1,8 +1,8 @@
+use nix::unistd::geteuid;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::io;
 use std::process::Command;
-use nix::unistd::geteuid;
 
 #[derive(Debug)]
 pub enum Error {

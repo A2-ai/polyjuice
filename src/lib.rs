@@ -39,18 +39,25 @@ impl Display for CmdError {
 ///
 /// # Parameters
 ///
-/// * `program`: A string slice that represents the program to be executed.
-/// * `username`: A string that represents the username of the user for whom the command is being executed.
+/// * `program`: The command or path to execute.
+/// * `username`: The target username. Any value implementing `AsRef<OsStr>` is
+///   accepted; non-UTF-8 values return [`CmdError::InvalidUsername`].
 ///
 /// # Returns
 ///
-/// If successful, returns a `Result` containing the new `Command` instance.
-/// On failure, returns a `Result` containing a `SetRunUserError` variant.
+/// Returns a configured [`Command`] on success, or a [`CmdError`] if the
+/// username cannot be validated or resolved, or the target environment cannot
+/// be retrieved.
 ///
 /// # Errors
 ///
-/// Returns a `SetRunUserError::UserNotFound` error if the user is not found.
-/// Returns a `SetRunUserError::FailedGettingEnv` error if there is an issue getting the user's environment variables.
+/// Returns:
+///
+/// - [`CmdError::InvalidUsername`] when `username` is not valid UTF-8.
+/// - [`CmdError::UserNotFound`] when no matching user exists.
+/// - [`CmdError::UserLookupFailed`] when the system user lookup fails.
+/// - [`CmdError::FailedGettingEnv`] when the target user's environment cannot
+///   be retrieved.
 ///
 /// # Examples
 ///
@@ -68,7 +75,10 @@ impl Display for CmdError {
 ///     }
 /// }
 /// ```
-pub fn cmd_as_username(program: impl AsRef<OsStr>, username: impl AsRef<OsStr>) -> Result<Command, CmdError> {
+pub fn cmd_as_username(
+    program: impl AsRef<OsStr>,
+    username: impl AsRef<OsStr>,
+) -> Result<Command, CmdError> {
     let username = username
         .as_ref()
         .to_str()
@@ -308,7 +318,9 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(CmdError::FailedGettingEnv(env::Error::InsufficientPrivileges))
+            Err(CmdError::FailedGettingEnv(
+                env::Error::InsufficientPrivileges
+            ))
         ));
     }
 
